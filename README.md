@@ -41,6 +41,10 @@ $agy-bridge 整理這個專案的架構
 技能也可在符合條件時自動選用。新安裝後若清單未更新，重新開啟聊天或載入技能。
 完整操作與重試規則見 [SKILL.md](agy-bridge/SKILL.md)。
 
+跨代理交接 agy run 時，使用 [agy run handoff record](agy-bridge/references/handoff.md)，並遵循公開的
+[共用 Codex／Claude Code 交接規格](https://github.com/John-owo/codex-cc-handoff/blob/main/codex/skills/agent-handoff/SKILL.md)。
+專案工作脈絡另見私人 [john-workflow repository](https://github.com/John-owo/john-workflow)。
+
 ## 測試
 
 測試只使用 Python 標準函式庫，不需要登入、不呼叫模型。
