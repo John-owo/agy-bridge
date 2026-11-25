@@ -186,15 +186,23 @@ def usage_groups(obj) -> list[dict]:
     return groups
 
 
+MODEL_VARIANTS = ("neon", "carbon", "argon", "hydrogen", "orchestrator", "flash", "opus", "sonnet", "gpt-oss")
+
+# Exact model IDs tried in order for each tier. Every candidate still has to pass
+# the quota-group check in choose_model.
+TIER_PREFERENCES = {
+    "routine": ("gemini-4-carbon-medium", "gemini-4-carbon-low"),
+    "standard": ("gemini-4-neon-high", "gemini-4-neon-medium"),
+    "complex": ("gemini-4-neon-xhigh", "gemini-4-neon-high", "claude-opus-5-5-high"),
+}
+
+
 def group_family(group: dict) -> str | None:
-    desc = str(group.get("description", "")) + " " + str(group.get("name", ""))
-    val = desc.lower()
-    if "argon" in val:
-        return "argon"
-    if "gemini" in val and ("flash" in val or "pro" in val):
-        return "flash"
-    if "claude" in val or "gpt-oss" in val:
+    val = (str(group.get("name", "")) + " " + str(group.get("description", ""))).lower()
+    if "claude" in val or "gpt" in val:
         return "claude"
+    if "gemini" in val:
+        return "gemini"
     return None
 
 
@@ -207,42 +215,47 @@ def group_usable(group: dict) -> bool:
 
 def model_family(model: dict) -> str | None:
     value = (model["id"] + " " + model["name"]).lower()
-    if "argon" in value:
-        return "argon"
-    if "flash" in value:
-        return "flash"
-    if "opus" in value or "sonnet" in value or "gpt-oss" in value:
+    if "claude" in value or "opus" in value or "sonnet" in value or "gpt-oss" in value:
         return "claude"
+    if "gemini" in value:
+        return "gemini"
     return None
 
 
+def model_variant(model: dict) -> str | None:
+    value = (model["id"] + " " + model["name"]).lower()
+    return next((v for v in MODEL_VARIANTS if v in value), None)
+
+
+def quota_group(model: dict, groups: list[dict]) -> dict | None:
+    """Return the single usable quota group covering this model, else None (fail closed)."""
+    family = model_family(model)
+    if family is None:
+        return None
+    candidates = [g for g in groups if group_family(g) == family]
+    if len(candidates) > 1:
+        variant = model_variant(model)
+        candidates = [g for g in candidates if variant and variant in (str(g.get("name", "")) + " " + str(g.get("description", ""))).lower()]
+    if len(candidates) != 1 or not group_usable(candidates[0]):
+        return None
+    return candidates[0]
+
+
 def choose_model(models: list[dict], groups: list[dict], tier: str, explicit: str | None = None) -> dict:
-    by_family = {}
-    for group in groups:
-        family = group_family(group)
-        if family and group_usable(group):
-            by_family.setdefault(family, group)
+    by_id = {m["id"]: m for m in models}
     if explicit:
-        candidates = [m for m in models if m["id"] == explicit]
-        if not candidates:
+        model = by_id.get(explicit)
+        if model is None:
             raise BridgeError("Explicit model ID is absent from agy model listing")
-        model = candidates[0]
-        family = model_family(model)
-        if family not in by_family:
+        group = quota_group(model, groups)
+        if group is None:
             raise BridgeError("Explicit model has no known group with usable quota")
-        return {"model": model, "group": by_family[family]}
-    preferences = {
-        "routine": (("flash", "medium"), ("flash", "low"), ("argon", "low")),
-        "standard": (("flash", "high"), ("argon", "medium")),
-        "complex": (("argon", "high"), ("opus", "high"), ("sonnet", "high")),
-    }[tier]
-    for kind, effort in preferences:
-        for model in models:
-            value = (model["id"] + " " + model["name"]).lower()
-            family = model_family(model)
-            matched = kind in value and effort in value
-            if matched and family in by_family:
-                return {"model": model, "group": by_family[family]}
+        return {"model": model, "group": group}
+    for model_id in TIER_PREFERENCES[tier]:
+        model = by_id.get(model_id)
+        group = quota_group(model, groups) if model else None
+        if group is not None:
+            return {"model": model, "group": group}
     raise BridgeError("No listed model matches the tier preference with a known usable quota group")
 
 

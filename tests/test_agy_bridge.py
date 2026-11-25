@@ -14,12 +14,18 @@ spec.loader.exec_module(bridge)
 
 
 MODELS = [
-    {"id": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash Medium"},
-    {"id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash High"},
-    {"id": "gemini-4-argon-medium", "name": "Gemini 4 Argon Medium"},
-    {"id": "gemini-4-argon-high", "name": "Gemini 4 Argon High"},
-    {"id": "claude-opus-5-5-high", "name": "Claude Opus 5.5 High"},
-    {"id": "claude-sonnet-5-5-high", "name": "Claude Sonnet 5.5 High"},
+    {"id": "gemini-4-neon-high", "name": "Gemini 4 Neon (High)"},
+    {"id": "gemini-4-neon-xhigh", "name": "Gemini 4 Neon (XHigh)"},
+    {"id": "gemini-4-neon-medium", "name": "Gemini 4 Neon (Medium)"},
+    {"id": "gemini-4-carbon-medium", "name": "Gemini 4 Carbon (Medium)"},
+    {"id": "gemini-4-carbon-low", "name": "Gemini 4 Carbon (Low)"},
+    {"id": "gemini-4-argon-high", "name": "Gemini 4 Argon (High)"},
+    {"id": "gemini-4-hydrogen-high", "name": "Gemini 4 Hydrogen (High)"},
+    {"id": "gemini-pro-orchestrator", "name": "Orchestrator (Carbon)"},
+    {"id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)"},
+    {"id": "claude-opus-5-5-high", "name": "Claude Opus 5.5 (High)"},
+    {"id": "claude-sonnet-5-5-high", "name": "Claude Sonnet 5.5 (High)"},
+    {"id": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)"},
 ]
 
 
@@ -27,10 +33,10 @@ def group(name, description, remaining):
     return {"name": name, "description": description, "buckets": [{"remaining_fraction": remaining}]}
 
 
+GEMINI_DESC = "Models within this group: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen, Orchestrator (Neon), Orchestrator (Carbon), Orchestrator (Argon), Gemini 3.8 Flash"
 GROUPS = [
-    group("Gemini Models", "Models within this group: Gemini Flash, Gemini Pro", 0.4),
-    group("Gemini 4 Argon", "Models within this group: Gemini 4 Argon", 0.3),
-    group("Claude and GPT models", "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS", 0.7),
+    group("Gemini Models", GEMINI_DESC, 0.4),
+    group("Claude and GPT models", "Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B", 0.7),
 ]
 
 
@@ -91,26 +97,62 @@ class StageTests(unittest.TestCase):
 
 
 class RoutingTests(unittest.TestCase):
-    def test_tiers_choose_expected_quota_groups(self):
-        self.assertEqual(bridge.choose_model(MODELS, GROUPS, "routine")["model"]["id"], "gemini-3.8-flash-medium")
-        self.assertEqual(bridge.choose_model(MODELS, GROUPS, "standard")["model"]["id"], "gemini-3.8-flash-high")
-        self.assertEqual(bridge.choose_model(MODELS, GROUPS, "complex")["model"]["id"], "gemini-4-argon-high")
+    def test_tiers_choose_expected_models(self):
+        self.assertEqual(bridge.choose_model(MODELS, GROUPS, "routine")["model"]["id"], "gemini-4-carbon-medium")
+        self.assertEqual(bridge.choose_model(MODELS, GROUPS, "standard")["model"]["id"], "gemini-4-neon-high")
+        self.assertEqual(bridge.choose_model(MODELS, GROUPS, "complex")["model"]["id"], "gemini-4-neon-xhigh")
 
-    def test_exhausted_argon_falls_back_to_opus(self):
-        groups = [GROUPS[0], group("Gemini 4 Argon", "Argon", 0), GROUPS[2]]
+    def test_tier_falls_back_within_preference_list(self):
+        models = [m for m in MODELS if m["id"] not in ("gemini-4-carbon-medium", "gemini-4-neon-xhigh")]
+        self.assertEqual(bridge.choose_model(models, GROUPS, "routine")["model"]["id"], "gemini-4-carbon-low")
+        self.assertEqual(bridge.choose_model(models, GROUPS, "complex")["model"]["id"], "gemini-4-neon-high")
+
+    def test_xhigh_is_not_mistaken_for_high(self):
+        models = [m for m in MODELS if m["id"] != "gemini-4-neon-high"]
+        self.assertEqual(bridge.choose_model(models, GROUPS, "standard")["model"]["id"], "gemini-4-neon-medium")
+
+    def test_exhausted_gemini_falls_back_to_opus_for_complex_only(self):
+        groups = [group("Gemini Models", GEMINI_DESC, 0), GROUPS[1]]
         self.assertEqual(bridge.choose_model(MODELS, groups, "complex")["model"]["id"], "claude-opus-5-5-high")
+        with self.assertRaises(bridge.BridgeError):
+            bridge.choose_model(MODELS, groups, "standard")
+
+    def test_every_gemini_variant_maps_to_gemini_group(self):
+        for model in MODELS:
+            if model["id"].startswith("gemini"):
+                with self.subTest(model=model["id"]):
+                    self.assertEqual(bridge.choose_model(MODELS, GROUPS, "routine", model["id"])["group"]["name"], "Gemini Models")
+        self.assertEqual(bridge.choose_model(MODELS, GROUPS, "routine", "gpt-oss-120b-medium")["group"]["name"], "Claude and GPT models")
+
+    def test_gemini_group_survives_argon_removal(self):
+        groups = [group("Gemini Models", "Models within this group: Gemini 4 Neon, Gemini 4 Carbon, Gemini 3.8 Flash", 0.5)]
+        self.assertEqual(bridge.choose_model(MODELS, groups, "standard", "gemini-4-neon-high")["group"]["name"], "Gemini Models")
+
+    def test_explicit_model_needs_usable_quota(self):
+        groups = [group("Gemini Models", GEMINI_DESC, 0), GROUPS[1]]
+        with self.assertRaisesRegex(bridge.BridgeError, "no known group"):
+            bridge.choose_model(MODELS, groups, "standard", "gemini-4-neon-high")
+
+    def test_ambiguous_gemini_groups_fail_closed(self):
+        groups = [group("Gemini Models A", "Gemini 4 Carbon", 0.5), group("Gemini Models B", "Gemini 4 Carbon", 0.5)]
+        with self.assertRaises(bridge.BridgeError):
+            bridge.choose_model(MODELS, groups, "routine")
+        split = [group("Gemini 4 Neon", "Gemini 4 Neon", 0.5), group("Gemini 4 Carbon", "Gemini 4 Carbon", 0)]
+        self.assertEqual(bridge.choose_model(MODELS, split, "standard")["group"]["name"], "Gemini 4 Neon")
+        with self.assertRaises(bridge.BridgeError):
+            bridge.choose_model(MODELS, split, "routine")
 
     def test_unknown_group_and_empty_buckets_fail_closed(self):
         groups = [group("Unknown", "Something novel", 1)]
         with self.assertRaises(bridge.BridgeError):
             bridge.choose_model(MODELS, groups, "routine")
         with self.assertRaises(bridge.BridgeError):
-            bridge.choose_model(MODELS, [{"name": "Gemini Models", "description": "Gemini Flash", "buckets": []}], "routine")
+            bridge.choose_model(MODELS, [{"name": "Gemini Models", "description": "Gemini 4 Carbon", "buckets": []}], "routine")
         with self.assertRaises(bridge.BridgeError):
             bridge.choose_model(MODELS, GROUPS, "routine", "unlisted")
 
     def test_every_bucket_must_have_positive_quota(self):
-        groups = [group("Gemini Models", "Gemini Flash", 0.5)]
+        groups = [group("Gemini Models", "Gemini 4 Carbon", 0.5)]
         groups[0]["buckets"].append({"remaining_fraction": 0})
         with self.assertRaises(bridge.BridgeError):
             bridge.choose_model(MODELS, groups, "routine")
